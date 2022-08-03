@@ -37,6 +37,7 @@ use crate::metrics::{counter, gauge, MetricType, TypedMetric};
 use crate::registry::Registry;
 use std::collections::HashMap;
 use std::ops::Deref;
+use std::vec::IntoIter;
 
 pub fn encode<M>(registry: &Registry<M>) -> openmetrics_data_model::MetricSet
 where
@@ -55,7 +56,7 @@ where
             family.unit = unit.as_str().to_string();
         }
         family.help = desc.help().to_string();
-        family.metrics = metric.encode(desc.labels().encode());
+        family.metrics = metric.encode(desc.labels().encode()).collect::<Vec<_>>();
 
         metric_set.metric_families.push(family);
     }
@@ -79,21 +80,15 @@ impl From<MetricType> for openmetrics_data_model::MetricType {
 pub trait EncodeMetric {
     type Iterator: Iterator<Item = openmetrics_data_model::Metric>;
 
-    fn encode(
-        &self,
-        labels: Vec<openmetrics_data_model::Label>,
-    ) -> Self::Iterator;
+    fn encode(&self, labels: Vec<openmetrics_data_model::Label>) -> Self::Iterator;
 
     fn metric_type(&self) -> MetricType;
 }
 
-impl<'a> EncodeMetric for Box<dyn EncodeMetric<Iterator = std::slice::Iter<'a, openmetrics_data_model::Metric>>> {
-    type Iterator = std::slice::Iter<'a, openmetrics_data_model::Metric>;
-    
-    fn encode(
-        &self,
-        labels: Vec<openmetrics_data_model::Label>,
-    ) -> Self::Iterator {
+impl EncodeMetric for Box<dyn EncodeMetric<Iterator = IntoIter<openmetrics_data_model::Metric>>> {
+    type Iterator = IntoIter<openmetrics_data_model::Metric>;
+
+    fn encode(&self, labels: Vec<openmetrics_data_model::Label>) -> Self::Iterator {
         self.deref().encode(labels)
     }
 
@@ -106,13 +101,12 @@ pub trait SendEncodeMetric: EncodeMetric + Send {}
 
 impl<T: EncodeMetric + Send> SendEncodeMetric for T {}
 
-impl<'a> EncodeMetric for Box<dyn SendEncodeMetric<Iterator = std::slice::Iter<'a, openmetrics_data_model::Metric>>> {
-    type Iterator = std::slice::Iter<'a, openmetrics_data_model::Metric>;
+impl EncodeMetric
+    for Box<dyn SendEncodeMetric<Iterator = IntoIter<openmetrics_data_model::Metric>>>
+{
+    type Iterator = IntoIter<openmetrics_data_model::Metric>;
 
-    fn encode(
-        &self,
-        labels: Vec<openmetrics_data_model::Label>,
-    ) -> Self::Iterator {
+    fn encode(&self, labels: Vec<openmetrics_data_model::Label>) -> Self::Iterator {
         self.deref().encode(labels)
     }
 
@@ -189,16 +183,13 @@ where
     N: EncodeCounterValue,
     A: counter::Atomic<N>,
 {
-    type Iterator = std::slice::Iter<'a, openmetrics_data_model::Metric>;
+    type Iterator = IntoIter<openmetrics_data_model::Metric>;
 
-    fn encode(
-        &self,
-        labels: Vec<openmetrics_data_model::Label>,
-    ) -> Self::Iterator {
+    fn encode(&self, labels: Vec<openmetrics_data_model::Label>) -> Self::Iterator {
         let mut metric = encode_counter_with_maybe_exemplar(self.get(), None);
         metric.labels = labels;
 
-        vec![metric].iter()
+        vec![metric].into_iter()
     }
 
     fn metric_type(&self) -> MetricType {
@@ -206,19 +197,16 @@ where
     }
 }
 
-impl<'a, S, N, A> EncodeMetric for CounterWithExemplar<S, N, A>
+impl<S, N, A> EncodeMetric for CounterWithExemplar<S, N, A>
 where
     S: EncodeLabel,
     N: Clone + EncodeCounterValue,
     A: counter::Atomic<N>,
     f64: From<N>,
 {
-    type Iterator = std::slice::Iter<'a, openmetrics_data_model::Metric>;
+    type Iterator = IntoIter<openmetrics_data_model::Metric>;
 
-    fn encode(
-        &self,
-        labels: Vec<openmetrics_data_model::Label>,
-    ) -> Self::Iterator {
+    fn encode(&self, labels: Vec<openmetrics_data_model::Label>) -> Self::Iterator {
         let (value, exemplar) = self.get();
 
         let exemplar_proto = if let Some(e) = exemplar.as_ref() {
@@ -230,7 +218,7 @@ where
         let mut metric = encode_counter_with_maybe_exemplar(value.clone(), exemplar_proto);
         metric.labels = labels;
 
-        vec![metric].iter()
+        vec![metric].into_iter()
     }
 
     fn metric_type(&self) -> MetricType {
@@ -285,17 +273,14 @@ impl EncodeGaugeValue for f64 {
     }
 }
 
-impl<'a, N, A> EncodeMetric for Gauge<N, A>
+impl<N, A> EncodeMetric for Gauge<N, A>
 where
     N: EncodeGaugeValue,
     A: gauge::Atomic<N>,
 {
-    type Iterator = std::slice::Iter<'a, openmetrics_data_model::Metric>;
+    type Iterator = IntoIter<openmetrics_data_model::Metric>;
 
-    fn encode(
-        &self,
-        labels: Vec<openmetrics_data_model::Label>,
-    ) -> Self::Iterator {
+    fn encode(&self, labels: Vec<openmetrics_data_model::Label>) -> Self::Iterator {
         let mut metric = openmetrics_data_model::Metric::default();
 
         metric.metric_points = {
@@ -313,7 +298,7 @@ where
         };
 
         metric.labels = labels;
-        vec![metric].iter()
+        vec![metric].into_iter()
     }
 
     fn metric_type(&self) -> MetricType {
@@ -324,18 +309,15 @@ where
 /////////////////////////////////////////////////////////////////////////////////
 // Family
 
-impl<'a, S, M, C> EncodeMetric for Family<S, M, C>
+impl<S, M, C> EncodeMetric for Family<S, M, C>
 where
     S: Clone + std::hash::Hash + Eq + EncodeLabel,
     M: EncodeMetric + TypedMetric,
     C: MetricConstructor<M>,
 {
-    type Iterator = std::slice::Iter<'a, openmetrics_data_model::Metric>;
+    type Iterator = IntoIter<openmetrics_data_model::Metric>;
 
-    fn encode(
-        &self,
-        labels: Vec<openmetrics_data_model::Label>,
-    ) -> Self::Iterator {
+    fn encode(&self, labels: Vec<openmetrics_data_model::Label>) -> Self::Iterator {
         let mut metrics = vec![];
 
         let guard = self.read();
@@ -345,7 +327,7 @@ where
             metrics.extend(metric.encode(label));
         }
 
-        metrics.iter()
+        metrics.into_iter()
     }
 
     fn metric_type(&self) -> MetricType {
@@ -356,18 +338,15 @@ where
 /////////////////////////////////////////////////////////////////////////////////
 // Histogram
 
-impl<'a> EncodeMetric for Histogram {
-    type Iterator = std::slice::Iter<'a, openmetrics_data_model::Metric>;
+impl EncodeMetric for Histogram {
+    type Iterator = IntoIter<openmetrics_data_model::Metric>;
 
-    fn encode(
-        &self,
-        labels: Vec<openmetrics_data_model::Label>,
-    ) -> Self::Iterator {
+    fn encode(&self, labels: Vec<openmetrics_data_model::Label>) -> Self::Iterator {
         let (sum, count, buckets) = self.get();
         // TODO: Would be better to use never type instead of `()`.
         let mut metric = encode_histogram_with_maybe_exemplars::<()>(sum, count, &buckets, None);
         metric.labels = labels;
-        vec![metric].iter()
+        vec![metric].into_iter()
     }
 
     fn metric_type(&self) -> MetricType {
@@ -375,22 +354,19 @@ impl<'a> EncodeMetric for Histogram {
     }
 }
 
-impl<'a, S> EncodeMetric for HistogramWithExemplars<S>
+impl<S> EncodeMetric for HistogramWithExemplars<S>
 where
     S: EncodeLabel,
 {
-    type Iterator = std::slice::Iter<'a, openmetrics_data_model::Metric>;
+    type Iterator = IntoIter<openmetrics_data_model::Metric>;
 
-    fn encode(
-        &self,
-        labels: Vec<openmetrics_data_model::Label>,
-    ) -> Self::Iterator {
+    fn encode(&self, labels: Vec<openmetrics_data_model::Label>) -> Self::Iterator {
         let inner = self.inner();
         let (sum, count, buckets) = inner.histogram.get();
         let mut metric =
             encode_histogram_with_maybe_exemplars(sum, count, &buckets, Some(&inner.exemplars));
         metric.labels = labels;
-        vec![metric].iter()
+        vec![metric].into_iter()
     }
 
     fn metric_type(&self) -> MetricType {
@@ -441,16 +417,13 @@ fn encode_histogram_with_maybe_exemplars<S: EncodeLabel>(
 /////////////////////////////////////////////////////////////////////////////////
 // Info
 
-impl<'a, S> EncodeMetric for Info<S>
+impl<S> EncodeMetric for Info<S>
 where
     S: EncodeLabel,
 {
-    type Iterator = std::slice::Iter<'a, openmetrics_data_model::Metric>;
+    type Iterator = IntoIter<openmetrics_data_model::Metric>;
 
-    fn encode(
-        &self,
-        labels: Vec<openmetrics_data_model::Label>,
-    ) -> Self::Iterator {
+    fn encode(&self, labels: Vec<openmetrics_data_model::Label>) -> Self::Iterator {
         let mut metric = openmetrics_data_model::Metric::default();
 
         metric.metric_points = {
@@ -470,7 +443,7 @@ where
             vec![metric_point]
         };
 
-        vec![metric].iter()
+        vec![metric].into_iter()
     }
 
     fn metric_type(&self) -> MetricType {
