@@ -323,7 +323,7 @@ where
 /////////////////////////////////////////////////////////////////////////////////
 // Family
 
-impl<'c, S, M, C> EncodeMetric for Family<S, M, C>
+impl<S, M, C> EncodeMetric for Family<S, M, C>
 where
     S: Clone + std::hash::Hash + Eq,
     for<'b> &'b S: EncodeLabel,
