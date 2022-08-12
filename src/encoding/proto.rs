@@ -121,8 +121,7 @@ impl EncodeMetric
     }
 }
 
-// TODO: Rename to EncodeLabels?
-pub trait EncodeLabel {
+pub trait EncodeLabels {
     type Iterator: Iterator<Item = openmetrics_data_model::Label>;
 
     fn encode(self) -> Self::Iterator;
@@ -138,7 +137,7 @@ impl<K: ToString, V: ToString> Into<openmetrics_data_model::Label> for &(K, V) {
 }
 
 // TODO: Is this needed? We already have `&'a [T]` below.
-impl<'a, T> EncodeLabel for &'a Vec<T>
+impl<'a, T> EncodeLabels for &'a Vec<T>
 where
     for<'b> &'b T: Into<openmetrics_data_model::Label>,
 {
@@ -149,7 +148,7 @@ where
     }
 }
 
-impl<'a, T> EncodeLabel for &'a [T]
+impl<'a, T> EncodeLabels for &'a [T]
 where
     for<'b> &'b T: Into<openmetrics_data_model::Label>,
 {
@@ -163,7 +162,7 @@ where
 fn encode_exemplar<S, N>(exemplar: &Exemplar<S, N>) -> openmetrics_data_model::Exemplar
 where
     N: Clone,
-    for<'a> &'a S: EncodeLabel,
+    for<'a> &'a S: EncodeLabels,
     f64: From<N>, // required because Exemplar.value is defined as `double` in protobuf
 {
     let mut exemplar_proto = openmetrics_data_model::Exemplar::default();
@@ -213,7 +212,7 @@ where
 
 impl<'a, S, N, A> EncodeMetric for CounterWithExemplar<S, N, A>
 where
-    for<'b> &'b S: EncodeLabel,
+    for<'b> &'b S: EncodeLabels,
     N: Clone + EncodeCounterValue,
     A: counter::Atomic<N>,
     f64: From<N>,
@@ -326,7 +325,7 @@ where
 impl<S, M, C> EncodeMetric for Family<S, M, C>
 where
     S: Clone + std::hash::Hash + Eq,
-    for<'b> &'b S: EncodeLabel,
+    for<'b> &'b S: EncodeLabels,
     M: EncodeMetric + TypedMetric,
     C: MetricConstructor<M>,
 {
@@ -378,7 +377,7 @@ impl EncodeMetric for Histogram {
 
 impl<S> EncodeMetric for HistogramWithExemplars<S>
 where
-    for<'b> &'b S: EncodeLabel,
+    for<'b> &'b S: EncodeLabels,
 {
     type Iterator = std::iter::Once<openmetrics_data_model::Metric>;
 
@@ -403,7 +402,7 @@ fn encode_histogram_with_maybe_exemplars<'a, S>(
     exemplars: Option<&'a HashMap<usize, Exemplar<S, f64>>>,
 ) -> openmetrics_data_model::Metric
 where
-    for<'b> &'b S: EncodeLabel,
+    for<'b> &'b S: EncodeLabels,
 {
     let mut metric = openmetrics_data_model::Metric::default();
 
@@ -444,7 +443,7 @@ where
 
 impl<S> EncodeMetric for Info<S>
 where
-    for<'b> &'b S: EncodeLabel,
+    for<'b> &'b S: EncodeLabels,
 {
     type Iterator = std::iter::Once<openmetrics_data_model::Metric>;
 
