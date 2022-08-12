@@ -38,6 +38,7 @@ use crate::registry::Registry;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::vec::IntoIter;
+use void::Void;
 
 pub fn encode<M>(registry: &Registry<M>) -> openmetrics_data_model::MetricSet
 where
@@ -156,6 +157,14 @@ where
 
     fn encode(self) -> Self::Iterator {
         Box::new(self.iter().map(|t| t.into()))
+    }
+}
+
+impl<'a> EncodeLabels for &'a Void {
+    type Iterator = Box<dyn Iterator<Item = openmetrics_data_model::Label>>;
+
+    fn encode(self) -> Self::Iterator {
+        unreachable!()
     }
 }
 
@@ -361,11 +370,8 @@ impl EncodeMetric for Histogram {
 
     fn encode(&self, labels: Vec<openmetrics_data_model::Label>) -> Self::Iterator {
         let (sum, count, buckets) = self.get();
-        // TODO: Would be better to use never type instead of `()`.
-        // TODO: Revert (String, String)?
-        let mut metric = encode_histogram_with_maybe_exemplars::<Vec<(String, String)>>(
-            sum, count, &buckets, None,
-        );
+        // TODO: Would be better to use never type instead of `Void`.
+        let mut metric = encode_histogram_with_maybe_exemplars::<Void>(sum, count, &buckets, None);
         metric.labels = labels;
         std::iter::once(metric)
     }
