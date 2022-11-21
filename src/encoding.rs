@@ -87,22 +87,42 @@ macro_rules! for_both {
 }
 
 impl<'a, 'b> MetricEncoder<'a, 'b> {
-    /// Encode a counter.
-    pub fn encode_counter<
-        S: EncodeLabelSet,
-        CounterValue: EncodeCounterValue,
-        ExemplarValue: EncodeExemplarValue,
-    >(
+    /// Encode a counter with a double value.
+    pub fn encode_counter_f64<S: EncodeLabelSet>(
         &mut self,
-        v: CounterValue,
-        exemplar: Option<&Exemplar<S, ExemplarValue>>,
+        v: f64,
+        exemplar: Option<&Exemplar<S, f64>>,
     ) -> Result<(), std::fmt::Error> {
-        for_both_mut!(self, MetricEncoderInner, e, e.encode_counter(v, exemplar))
+        for_both_mut!(
+            self,
+            MetricEncoderInner,
+            e,
+            e.encode_counter_f64(v, exemplar)
+        )
     }
 
-    /// Encode a gauge.
-    pub fn encode_gauge(&mut self, v: impl EncodeGaugeValue) -> Result<(), std::fmt::Error> {
-        for_both_mut!(self, MetricEncoderInner, e, e.encode_gauge(v))
+    /// Encode a counter with an integer value.
+    pub fn encode_counter_u64<S: EncodeLabelSet>(
+        &mut self,
+        v: u64,
+        exemplar: Option<&Exemplar<S, u64>>,
+    ) -> Result<(), std::fmt::Error> {
+        for_both_mut!(
+            self,
+            MetricEncoderInner,
+            e,
+            e.encode_counter_u64(v, exemplar)
+        )
+    }
+
+    /// Encode a gauge with an integer value.
+    pub fn encode_gauge_i64(&mut self, v: i64) -> Result<(), std::fmt::Error> {
+        for_both_mut!(self, MetricEncoderInner, e, e.encode_gauge_i64(v))
+    }
+
+    /// Encode a gauge with a double value.
+    pub fn encode_gauge_f64(&mut self, v: f64) -> Result<(), std::fmt::Error> {
+        for_both_mut!(self, MetricEncoderInner, e, e.encode_gauge_f64(v))
     }
 
     /// Encode an info.
@@ -402,157 +422,5 @@ impl EncodeLabelValue for f64 {
 impl EncodeLabelValue for u64 {
     fn encode(&self, encoder: &mut LabelValueEncoder) -> Result<(), std::fmt::Error> {
         encoder.write_str(itoa::Buffer::new().format(*self))
-    }
-}
-
-/// An encodable gauge value.
-pub trait EncodeGaugeValue {
-    /// Encode the given instance in the OpenMetrics text encoding.
-    fn encode(&self, encoder: &mut GaugeValueEncoder) -> Result<(), std::fmt::Error>;
-}
-
-impl EncodeGaugeValue for i64 {
-    fn encode(&self, encoder: &mut GaugeValueEncoder) -> Result<(), std::fmt::Error> {
-        encoder.encode_i64(*self)
-    }
-}
-
-impl EncodeGaugeValue for f64 {
-    fn encode(&self, encoder: &mut GaugeValueEncoder) -> Result<(), std::fmt::Error> {
-        encoder.encode_f64(*self)
-    }
-}
-
-/// Encoder for a gauge value.
-#[derive(Debug)]
-pub struct GaugeValueEncoder<'a>(GaugeValueEncoderInner<'a>);
-
-#[derive(Debug)]
-enum GaugeValueEncoderInner<'a> {
-    Text(text::GaugeValueEncoder<'a>),
-    #[cfg(feature = "protobuf")]
-    Protobuf(protobuf::GaugeValueEncoder<'a>),
-}
-
-impl<'a> GaugeValueEncoder<'a> {
-    fn encode_f64(&mut self, v: f64) -> Result<(), std::fmt::Error> {
-        for_both_mut!(self, GaugeValueEncoderInner, e, e.encode_f64(v))
-    }
-
-    fn encode_i64(&mut self, v: i64) -> Result<(), std::fmt::Error> {
-        for_both_mut!(self, GaugeValueEncoderInner, e, e.encode_i64(v))
-    }
-}
-
-impl<'a> From<text::GaugeValueEncoder<'a>> for GaugeValueEncoder<'a> {
-    fn from(e: text::GaugeValueEncoder<'a>) -> Self {
-        GaugeValueEncoder(GaugeValueEncoderInner::Text(e))
-    }
-}
-
-#[cfg(feature = "protobuf")]
-impl<'a> From<protobuf::GaugeValueEncoder<'a>> for GaugeValueEncoder<'a> {
-    fn from(e: protobuf::GaugeValueEncoder<'a>) -> Self {
-        GaugeValueEncoder(GaugeValueEncoderInner::Protobuf(e))
-    }
-}
-
-/// An encodable counter value.
-pub trait EncodeCounterValue {
-    /// Encode the given instance in the OpenMetrics text encoding.
-    fn encode(&self, encoder: &mut CounterValueEncoder) -> Result<(), std::fmt::Error>;
-}
-
-impl EncodeCounterValue for u64 {
-    fn encode(&self, encoder: &mut CounterValueEncoder) -> Result<(), std::fmt::Error> {
-        encoder.encode_u64(*self)
-    }
-}
-
-impl EncodeCounterValue for f64 {
-    fn encode(&self, encoder: &mut CounterValueEncoder) -> Result<(), std::fmt::Error> {
-        encoder.encode_f64(*self)
-    }
-}
-
-/// Encoder for a counter value.
-#[derive(Debug)]
-pub struct CounterValueEncoder<'a>(CounterValueEncoderInner<'a>);
-
-#[derive(Debug)]
-enum CounterValueEncoderInner<'a> {
-    Text(text::CounterValueEncoder<'a>),
-    #[cfg(feature = "protobuf")]
-    Protobuf(protobuf::CounterValueEncoder<'a>),
-}
-
-impl<'a> CounterValueEncoder<'a> {
-    fn encode_f64(&mut self, v: f64) -> Result<(), std::fmt::Error> {
-        for_both_mut!(self, CounterValueEncoderInner, e, e.encode_f64(v))
-    }
-
-    fn encode_u64(&mut self, v: u64) -> Result<(), std::fmt::Error> {
-        for_both_mut!(self, CounterValueEncoderInner, e, e.encode_u64(v))
-    }
-}
-
-/// An encodable exemplar value.
-pub trait EncodeExemplarValue {
-    /// Encode the given instance in the OpenMetrics text encoding.
-    fn encode(&self, encoder: ExemplarValueEncoder) -> Result<(), std::fmt::Error>;
-}
-
-impl EncodeExemplarValue for f64 {
-    fn encode(&self, mut encoder: ExemplarValueEncoder) -> Result<(), std::fmt::Error> {
-        encoder.encode(*self)
-    }
-}
-
-impl EncodeExemplarValue for u64 {
-    fn encode(&self, mut encoder: ExemplarValueEncoder) -> Result<(), std::fmt::Error> {
-        encoder.encode(*self as f64)
-    }
-}
-
-impl<'a> From<text::CounterValueEncoder<'a>> for CounterValueEncoder<'a> {
-    fn from(e: text::CounterValueEncoder<'a>) -> Self {
-        CounterValueEncoder(CounterValueEncoderInner::Text(e))
-    }
-}
-
-#[cfg(feature = "protobuf")]
-impl<'a> From<protobuf::CounterValueEncoder<'a>> for CounterValueEncoder<'a> {
-    fn from(e: protobuf::CounterValueEncoder<'a>) -> Self {
-        CounterValueEncoder(CounterValueEncoderInner::Protobuf(e))
-    }
-}
-
-/// Encoder for an exemplar value.
-#[derive(Debug)]
-pub struct ExemplarValueEncoder<'a>(ExemplarValueEncoderInner<'a>);
-
-#[derive(Debug)]
-enum ExemplarValueEncoderInner<'a> {
-    Text(text::ExemplarValueEncoder<'a>),
-    #[cfg(feature = "protobuf")]
-    Protobuf(protobuf::ExemplarValueEncoder<'a>),
-}
-
-impl<'a> ExemplarValueEncoder<'a> {
-    fn encode(&mut self, v: f64) -> Result<(), std::fmt::Error> {
-        for_both_mut!(self, ExemplarValueEncoderInner, e, e.encode(v))
-    }
-}
-
-impl<'a> From<text::ExemplarValueEncoder<'a>> for ExemplarValueEncoder<'a> {
-    fn from(e: text::ExemplarValueEncoder<'a>) -> Self {
-        ExemplarValueEncoder(ExemplarValueEncoderInner::Text(e))
-    }
-}
-
-#[cfg(feature = "protobuf")]
-impl<'a> From<protobuf::ExemplarValueEncoder<'a>> for ExemplarValueEncoder<'a> {
-    fn from(e: protobuf::ExemplarValueEncoder<'a>) -> Self {
-        ExemplarValueEncoder(ExemplarValueEncoderInner::Protobuf(e))
     }
 }

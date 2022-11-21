@@ -2,7 +2,7 @@
 //!
 //! See [`Gauge`] for details.
 
-use crate::encoding::{EncodeGaugeValue, EncodeMetric, MetricEncoder};
+use crate::encoding::{EncodeMetric, MetricEncoder};
 
 use super::{MetricType, TypedMetric};
 use std::marker::PhantomData;
@@ -267,13 +267,24 @@ impl<N, A> TypedMetric for Gauge<N, A> {
     const TYPE: MetricType = MetricType::Gauge;
 }
 
-impl<N, A> EncodeMetric for Gauge<N, A>
+impl<A> EncodeMetric for Gauge<i64, A>
 where
-    N: EncodeGaugeValue,
-    A: Atomic<N>,
+    A: Atomic<i64>,
 {
     fn encode(&self, mut encoder: MetricEncoder) -> Result<(), std::fmt::Error> {
-        encoder.encode_gauge(self.get())
+        encoder.encode_gauge_i64(self.get())
+    }
+    fn metric_type(&self) -> MetricType {
+        Self::TYPE
+    }
+}
+
+impl<A> EncodeMetric for Gauge<f64, A>
+where
+    A: Atomic<f64>,
+{
+    fn encode(&self, mut encoder: MetricEncoder) -> Result<(), std::fmt::Error> {
+        encoder.encode_gauge_f64(self.get())
     }
     fn metric_type(&self) -> MetricType {
         Self::TYPE

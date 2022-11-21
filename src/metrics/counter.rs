@@ -173,13 +173,19 @@ impl<N, A> TypedMetric for Counter<N, A> {
     const TYPE: MetricType = MetricType::Counter;
 }
 
-impl<N, A> EncodeMetric for Counter<N, A>
-where
-    N: crate::encoding::EncodeCounterValue,
-    A: Atomic<N>,
-{
+impl EncodeMetric for Counter<u64, AtomicU64> {
     fn encode(&self, mut encoder: MetricEncoder) -> Result<(), std::fmt::Error> {
-        encoder.encode_counter::<(), _, u64>(self.get(), None)
+        encoder.encode_counter_u64::<()>(self.get(), None)
+    }
+
+    fn metric_type(&self) -> MetricType {
+        Self::TYPE
+    }
+}
+
+impl EncodeMetric for Counter<f64, AtomicU64> {
+    fn encode(&self, mut encoder: MetricEncoder) -> Result<(), std::fmt::Error> {
+        encoder.encode_counter_f64::<()>(self.get(), None)
     }
 
     fn metric_type(&self) -> MetricType {

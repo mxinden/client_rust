@@ -31,16 +31,16 @@ pub mod openmetrics_data_model {
 }
 
 use std::collections::HashMap;
+use std::fmt;
 
+use crate::encoding::{EncodeLabelSet, LabelSetEncoderInner};
 use crate::metrics::exemplar::Exemplar;
 use crate::metrics::MetricType;
 use crate::registry::Registry;
 
-use super::{EncodeExemplarValue, EncodeLabelSet};
-
 /// Encode the metrics registered with the provided [`Registry`] into MetricSet
 /// using the OpenMetrics protobuf format.
-pub fn encode(registry: &Registry) -> Result<openmetrics_data_model::MetricSet, std::fmt::Error> {
+pub fn encode(registry: &Registry) -> Result<openmetrics_data_model::MetricSet, fmt::Error> {
     let mut metric_set = openmetrics_data_model::MetricSet::default();
 
     for (desc, metric) in registry.iter() {
@@ -60,13 +60,7 @@ pub fn encode(registry: &Registry) -> Result<openmetrics_data_model::MetricSet, 
             ..Default::default()
         };
 
-        let mut labels = vec![];
-        desc.labels().encode(
-            LabelSetEncoder {
-                labels: &mut labels,
-            }
-            .into(),
-        )?;
+        let mut labels = encode_labels(&desc.labels())?;
 
         let encoder = MetricEncoder {
             family: &mut family.metrics,
@@ -80,6 +74,20 @@ pub fn encode(registry: &Registry) -> Result<openmetrics_data_model::MetricSet, 
     }
 
     Ok(metric_set)
+}
+
+fn encode_labels(
+    label_set: &impl EncodeLabelSet,
+) -> Result<Vec<openmetrics_data_model::Label>, fmt::Error> {
+    let mut encoded = vec![];
+
+    label_set.encode(crate::encoding::LabelSetEncoder(
+        LabelSetEncoderInner::Protobuf(LabelSetEncoder {
+            labels: &mut encoded,
+        }),
+    ))?;
+
+    Ok(encoded)
 }
 
 impl From<MetricType> for openmetrics_data_model::MetricType {
@@ -102,22 +110,40 @@ pub(crate) struct MetricEncoder<'a> {
 }
 
 impl<'a> MetricEncoder<'a> {
-    pub fn encode_counter<S: EncodeLabelSet, V: EncodeExemplarValue>(
+    pub fn encode_counter_u64<S: EncodeLabelSet>(
         &mut self,
-        v: impl super::EncodeCounterValue,
-        exemplar: Option<&Exemplar<S, V>>,
-    ) -> Result<(), std::fmt::Error> {
-        let mut value = openmetrics_data_model::counter_value::Total::IntValue(0);
-        let mut e = CounterValueEncoder { value: &mut value }.into();
-        v.encode(&mut e)?;
+        v: u64,
+        exemplar: Option<&Exemplar<S, u64>>,
+    ) -> Result<(), fmt::Error> {
+        self.encode_counter(
+            openmetrics_data_model::counter_value::Total::IntValue(v),
+            exemplar.map(|e| e.try_into()).transpose()?,
+        )
+    }
 
+    pub fn encode_counter_f64<S: EncodeLabelSet>(
+        &mut self,
+        v: f64,
+        exemplar: Option<&Exemplar<S, f64>>,
+    ) -> Result<(), fmt::Error> {
+        self.encode_counter(
+            openmetrics_data_model::counter_value::Total::DoubleValue(v),
+            exemplar.map(|e| e.try_into()).transpose()?,
+        )
+    }
+
+    fn encode_counter(
+        &mut self,
+        total: openmetrics_data_model::counter_value::Total,
+        exemplar: Option<openmetrics_data_model::Exemplar>,
+    ) -> Result<(), fmt::Error> {
         self.family.push(openmetrics_data_model::Metric {
             labels: self.labels.clone(),
             metric_points: vec![openmetrics_data_model::MetricPoint {
                 value: Some(openmetrics_data_model::metric_point::Value::CounterValue(
                     openmetrics_data_model::CounterValue {
-                        total: Some(value),
-                        exemplar: exemplar.map(|e| e.try_into()).transpose()?,
+                        total: Some(total),
+                        exemplar,
                         ..Default::default()
                     },
                 )),
@@ -128,16 +154,23 @@ impl<'a> MetricEncoder<'a> {
         Ok(())
     }
 
-    pub fn encode_gauge(&mut self, v: impl super::EncodeGaugeValue) -> Result<(), std::fmt::Error> {
-        let mut value = openmetrics_data_model::gauge_value::Value::IntValue(0);
-        let mut e = GaugeValueEncoder { value: &mut value }.into();
-        v.encode(&mut e)?;
+    pub fn encode_gauge_i64(&mut self, v: i64) -> Result<(), fmt::Error> {
+        self.encode_gauge(openmetrics_data_model::gauge_value::Value::IntValue(v))
+    }
 
+    pub fn encode_gauge_f64(&mut self, v: f64) -> Result<(), fmt::Error> {
+        self.encode_gauge(openmetrics_data_model::gauge_value::Value::DoubleValue(v))
+    }
+
+    fn encode_gauge(
+        &mut self,
+        v: openmetrics_data_model::gauge_value::Value,
+    ) -> Result<(), fmt::Error> {
         self.family.push(openmetrics_data_model::Metric {
             labels: self.labels.clone(),
             metric_points: vec![openmetrics_data_model::MetricPoint {
                 value: Some(openmetrics_data_model::metric_point::Value::GaugeValue(
-                    openmetrics_data_model::GaugeValue { value: Some(value) },
+                    openmetrics_data_model::GaugeValue { value: Some(v) },
                 )),
                 ..Default::default()
             }],
@@ -149,14 +182,8 @@ impl<'a> MetricEncoder<'a> {
     pub fn encode_info(
         &mut self,
         label_set: &impl super::EncodeLabelSet,
-    ) -> Result<(), std::fmt::Error> {
-        let mut info_labels = vec![];
-        label_set.encode(
-            LabelSetEncoder {
-                labels: &mut info_labels,
-            }
-            .into(),
-        )?;
+    ) -> Result<(), fmt::Error> {
+        let info_labels = encode_labels(label_set)?;
 
         self.family.push(openmetrics_data_model::Metric {
             labels: self.labels.clone(),
@@ -174,7 +201,7 @@ impl<'a> MetricEncoder<'a> {
     pub fn encode_family<'b, S: EncodeLabelSet>(
         &'b mut self,
         label_set: &S,
-    ) -> Result<MetricEncoder<'b>, std::fmt::Error> {
+    ) -> Result<MetricEncoder<'b>, fmt::Error> {
         label_set.encode(
             LabelSetEncoder {
                 labels: &mut self.labels,
@@ -195,12 +222,12 @@ impl<'a> MetricEncoder<'a> {
         count: u64,
         buckets: &[(f64, u64)],
         exemplars: Option<&HashMap<usize, Exemplar<S, f64>>>,
-    ) -> Result<(), std::fmt::Error> {
+    ) -> Result<(), fmt::Error> {
         let buckets = buckets
             .into_iter()
             .enumerate()
             .map(|(i, (upper_bound, count))| {
-                Ok(openmetrics_data_model::histogram_value::Bucket {
+                Ok::<_, fmt::Error>(openmetrics_data_model::histogram_value::Bucket {
                     upper_bound: *upper_bound,
                     count: *count,
                     exemplar: exemplars
@@ -232,59 +259,27 @@ impl<'a> MetricEncoder<'a> {
     }
 }
 
-impl<S: EncodeLabelSet, V: EncodeExemplarValue> TryFrom<&Exemplar<S, V>>
-    for openmetrics_data_model::Exemplar
-{
-    type Error = std::fmt::Error;
+impl<S: EncodeLabelSet> TryFrom<&Exemplar<S, f64>> for openmetrics_data_model::Exemplar {
+    type Error = fmt::Error;
 
-    fn try_from(exemplar: &Exemplar<S, V>) -> Result<Self, Self::Error> {
-        let mut value = f64::default();
-        exemplar
-            .value
-            .encode(ExemplarValueEncoder { value: &mut value }.into())?;
-
-        let mut labels = vec![];
-        exemplar.label_set.encode(
-            LabelSetEncoder {
-                labels: &mut labels,
-            }
-            .into(),
-        )?;
-
+    fn try_from(exemplar: &Exemplar<S, f64>) -> Result<Self, Self::Error> {
         Ok(openmetrics_data_model::Exemplar {
-            value,
+            value: exemplar.value,
             timestamp: Default::default(),
-            label: labels,
+            label: encode_labels(&exemplar.label_set)?,
         })
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct GaugeValueEncoder<'a> {
-    value: &'a mut openmetrics_data_model::gauge_value::Value,
-}
+impl<S: EncodeLabelSet> TryFrom<&Exemplar<S, u64>> for openmetrics_data_model::Exemplar {
+    type Error = fmt::Error;
 
-impl<'a> GaugeValueEncoder<'a> {
-    pub fn encode_i64(&mut self, v: i64) -> Result<(), std::fmt::Error> {
-        *self.value = openmetrics_data_model::gauge_value::Value::IntValue(v);
-        Ok(())
-    }
-
-    pub fn encode_f64(&mut self, v: f64) -> Result<(), std::fmt::Error> {
-        *self.value = openmetrics_data_model::gauge_value::Value::DoubleValue(v);
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct ExemplarValueEncoder<'a> {
-    value: &'a mut f64,
-}
-
-impl<'a> ExemplarValueEncoder<'a> {
-    pub fn encode(&mut self, v: f64) -> Result<(), std::fmt::Error> {
-        *self.value = v;
-        Ok(())
+    fn try_from(exemplar: &Exemplar<S, u64>) -> Result<Self, Self::Error> {
+        Ok(openmetrics_data_model::Exemplar {
+            value: exemplar.value as f64,
+            timestamp: Default::default(),
+            label: encode_labels(&exemplar.label_set)?,
+        })
     }
 }
 
@@ -294,23 +289,6 @@ impl<K: ToString, V: ToString> From<&(K, V)> for openmetrics_data_model::Label {
             name: kv.0.to_string(),
             value: kv.1.to_string(),
         }
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct CounterValueEncoder<'a> {
-    value: &'a mut openmetrics_data_model::counter_value::Total,
-}
-
-impl<'a> CounterValueEncoder<'a> {
-    pub fn encode_f64(&mut self, v: f64) -> Result<(), std::fmt::Error> {
-        *self.value = openmetrics_data_model::counter_value::Total::DoubleValue(v);
-        Ok(())
-    }
-
-    pub fn encode_u64(&mut self, v: u64) -> Result<(), std::fmt::Error> {
-        *self.value = openmetrics_data_model::counter_value::Total::IntValue(v);
-        Ok(())
     }
 }
 
@@ -333,7 +311,7 @@ pub(crate) struct LabelEncoder<'a> {
 }
 
 impl<'a> LabelEncoder<'a> {
-    pub fn encode_label_key(&mut self) -> Result<LabelKeyEncoder, std::fmt::Error> {
+    pub fn encode_label_key(&mut self) -> Result<LabelKeyEncoder, fmt::Error> {
         self.labels.push(openmetrics_data_model::Label::default());
 
         Ok(LabelKeyEncoder {
@@ -347,14 +325,14 @@ pub(crate) struct LabelKeyEncoder<'a> {
     label: &'a mut openmetrics_data_model::Label,
 }
 
-impl<'a> std::fmt::Write for LabelKeyEncoder<'a> {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+impl<'a> fmt::Write for LabelKeyEncoder<'a> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
         self.label.name.write_str(s)
     }
 }
 
 impl<'a> LabelKeyEncoder<'a> {
-    pub fn encode_label_value(self) -> Result<LabelValueEncoder<'a>, std::fmt::Error> {
+    pub fn encode_label_value(self) -> Result<LabelValueEncoder<'a>, fmt::Error> {
         Ok(LabelValueEncoder {
             label_value: &mut self.label.value,
         })
@@ -367,13 +345,13 @@ pub(crate) struct LabelValueEncoder<'a> {
 }
 
 impl<'a> LabelValueEncoder<'a> {
-    pub fn finish(self) -> Result<(), std::fmt::Error> {
+    pub fn finish(self) -> Result<(), fmt::Error> {
         Ok(())
     }
 }
 
-impl<'a> std::fmt::Write for LabelValueEncoder<'a> {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+impl<'a> fmt::Write for LabelValueEncoder<'a> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
         self.label_value.write_str(s)
     }
 }

@@ -2,9 +2,7 @@
 //!
 //! See [`CounterWithExemplar`] and [`HistogramWithExemplars`] for details.
 
-use crate::encoding::{
-    EncodeCounterValue, EncodeExemplarValue, EncodeLabelSet, EncodeMetric, MetricEncoder,
-};
+use crate::encoding::{EncodeLabelSet, EncodeMetric, MetricEncoder};
 
 use super::counter::{self, Counter};
 use super::histogram::Histogram;
@@ -71,6 +69,36 @@ pub struct CounterWithExemplar<S, N = u64, A = AtomicU64> {
     pub(crate) inner: Arc<RwLock<CounterWithExemplarInner<S, N, A>>>,
 }
 
+impl<S> CounterWithExemplar<S, u64, AtomicU64> {
+    // TODO: Implement `fn inc`. Problematic right now as one can not produce
+    // value `1` of type `N`.
+
+    /// Increase the [`CounterWithExemplar`] by `v`, updating the [`Exemplar`]
+    /// if a label set is provided, returning the previous value.
+    pub fn inc_by(&self, value: u64, label_set: Option<S>) -> u64 {
+        let mut inner = self.inner.write();
+
+        inner.exemplar = label_set.map(|label_set| Exemplar { label_set, value });
+
+        inner.counter.inc_by(value)
+    }
+}
+
+impl<S> CounterWithExemplar<S, f64, AtomicU64> {
+    // TODO: Implement `fn inc`. Problematic right now as one can not produce
+    // value `1` of type `N`.
+
+    /// Increase the [`CounterWithExemplar`] by `v`, updating the [`Exemplar`]
+    /// if a label set is provided, returning the previous value.
+    pub fn inc_by(&self, value: f64, label_set: Option<S>) -> f64 {
+        let mut inner = self.inner.write();
+
+        inner.exemplar = label_set.map(|label_set| Exemplar { label_set, value });
+
+        inner.counter.inc_by(value)
+    }
+}
+
 impl<S> TypedMetric for CounterWithExemplar<S> {
     const TYPE: MetricType = MetricType::Counter;
 }
@@ -110,22 +138,6 @@ impl<S, N, A: Default> Default for CounterWithExemplar<S, N, A> {
 }
 
 impl<S, N: Clone, A: counter::Atomic<N>> CounterWithExemplar<S, N, A> {
-    // TODO: Implement `fn inc`. Problematic right now as one can not produce
-    // value `1` of type `N`.
-
-    /// Increase the [`CounterWithExemplar`] by `v`, updating the [`Exemplar`]
-    /// if a label set is provided, returning the previous value.
-    pub fn inc_by(&self, v: N, label_set: Option<S>) -> N {
-        let mut inner = self.inner.write();
-
-        inner.exemplar = label_set.map(|label_set| Exemplar {
-            label_set,
-            value: v.clone(),
-        });
-
-        inner.counter.inc_by(v)
-    }
-
     /// Get the current value of the [`CounterWithExemplar`] as well as its
     /// [`Exemplar`] if any.
     pub fn get(&self) -> (N, MappedRwLockReadGuard<Option<Exemplar<S, N>>>) {
@@ -148,20 +160,30 @@ impl<S, N: Clone, A: counter::Atomic<N>> CounterWithExemplar<S, N, A> {
     }
 }
 
-// TODO: S, V, N, A are hard to grasp.
-impl<S, N, A> EncodeMetric for crate::metrics::exemplar::CounterWithExemplar<S, N, A>
+impl<S> EncodeMetric for CounterWithExemplar<S, u64, AtomicU64>
 where
     S: EncodeLabelSet,
-    N: EncodeCounterValue + EncodeExemplarValue + Clone,
-    A: counter::Atomic<N>,
 {
     fn encode(&self, mut encoder: MetricEncoder) -> Result<(), std::fmt::Error> {
         let (value, exemplar) = self.get();
-        encoder.encode_counter(value, exemplar.as_ref())
+        encoder.encode_counter_u64(value, exemplar.as_ref())
     }
 
     fn metric_type(&self) -> MetricType {
-        Counter::<N, A>::TYPE
+        Counter::<u64, AtomicU64>::TYPE
+    }
+}
+impl<S> EncodeMetric for CounterWithExemplar<S, f64, AtomicU64>
+where
+    S: EncodeLabelSet,
+{
+    fn encode(&self, mut encoder: MetricEncoder) -> Result<(), std::fmt::Error> {
+        let (value, exemplar) = self.get();
+        encoder.encode_counter_f64(value, exemplar.as_ref())
+    }
+
+    fn metric_type(&self) -> MetricType {
+        Counter::<f64, AtomicU64>::TYPE
     }
 }
 
@@ -247,17 +269,13 @@ impl<S> HistogramWithExemplars<S> {
 
     /// Observe the given value, optionally providing a label set and thus
     /// setting the [`Exemplar`] value.
-    pub fn observe(&self, v: f64, label_set: Option<S>) {
+    pub fn observe(&self, value: f64, label_set: Option<S>) {
         let mut inner = self.inner.write();
-        let bucket = inner.histogram.observe_and_bucket(v);
+        let bucket = inner.histogram.observe_and_bucket(value);
         if let (Some(bucket), Some(label_set)) = (bucket, label_set) {
-            inner.exemplars.insert(
-                bucket,
-                Exemplar {
-                    label_set,
-                    value: v,
-                },
-            );
+            inner
+                .exemplars
+                .insert(bucket, Exemplar { label_set, value });
         }
     }
 

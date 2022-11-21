@@ -24,17 +24,18 @@
 //! assert_eq!(expected, buffer);
 //! ```
 
-use crate::encoding::{EncodeExemplarValue, EncodeLabelSet, EncodeMetric};
+use crate::encoding::{EncodeLabelSet, EncodeMetric};
 use crate::metrics::exemplar::Exemplar;
 use crate::registry::{Registry, Unit};
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fmt;
 use std::fmt::Write;
 
 /// Encode the metrics registered with the provided [`Registry`] into the
 /// provided [`Write`]r using the OpenMetrics text format.
-pub fn encode<W>(writer: &mut W, registry: &Registry) -> Result<(), std::fmt::Error>
+pub fn encode<W>(writer: &mut W, registry: &Registry) -> Result<(), fmt::Error>
 where
     W: Write,
 {
@@ -112,26 +113,46 @@ impl<'a, 'b> std::fmt::Debug for MetricEncoder<'a, 'b> {
 }
 
 impl<'a, 'b> MetricEncoder<'a, 'b> {
-    pub fn encode_counter<S: EncodeLabelSet, V: EncodeExemplarValue>(
+    pub fn encode_counter_u64<S: EncodeLabelSet>(
         &mut self,
-        v: impl super::EncodeCounterValue,
+        v: u64,
+        exemplar: Option<&Exemplar<S, u64>>,
+    ) -> Result<(), fmt::Error> {
+        self.encode_counter(v, |w, v| w.write_fmt(format_args!("{v}")), exemplar)
+    }
+
+    pub fn encode_counter_f64<S: EncodeLabelSet>(
+        &mut self,
+        v: f64,
+        exemplar: Option<&Exemplar<S, f64>>,
+    ) -> Result<(), fmt::Error> {
+        self.encode_counter(
+            v,
+            |w, v| w.write_str(dtoa::Buffer::new().format(v)),
+            exemplar,
+        )
+    }
+
+    fn encode_counter<S: EncodeLabelSet, V>(
+        &mut self,
+        value: V,
+        encode_value: impl Fn(&mut dyn Write, V) -> fmt::Result,
         exemplar: Option<&Exemplar<S, V>>,
-    ) -> Result<(), std::fmt::Error> {
+    ) -> Result<(), fmt::Error>
+    where
+        V: Copy,
+    {
         self.write_name_and_unit()?;
 
         self.write_suffix("total")?;
 
         self.encode_labels::<()>(None)?;
 
-        v.encode(
-            &mut CounterValueEncoder {
-                writer: self.writer,
-            }
-            .into(),
-        )?;
+        self.writer.write_str(" ")?;
+        encode_value(self.writer, value)?;
 
         if let Some(exemplar) = exemplar {
-            self.encode_exemplar(exemplar)?;
+            self.encode_exemplar(encode_value, exemplar)?;
         }
 
         self.newline()?;
@@ -139,24 +160,31 @@ impl<'a, 'b> MetricEncoder<'a, 'b> {
         Ok(())
     }
 
-    pub fn encode_gauge(&mut self, v: impl super::EncodeGaugeValue) -> Result<(), std::fmt::Error> {
+    pub fn encode_gauge_i64(&mut self, v: i64) -> Result<(), fmt::Error> {
+        self.encode_gauge(|w| w.write_fmt(format_args!("{v}")))
+    }
+
+    pub fn encode_gauge_f64(&mut self, v: f64) -> Result<(), fmt::Error> {
+        self.encode_gauge(|w| w.write_str(dtoa::Buffer::new().format(v)))
+    }
+
+    fn encode_gauge(
+        &mut self,
+        encode_value: impl FnOnce(&mut dyn Write) -> fmt::Result,
+    ) -> Result<(), fmt::Error> {
         self.write_name_and_unit()?;
 
         self.encode_labels::<()>(None)?;
 
-        v.encode(
-            &mut GaugeValueEncoder {
-                writer: self.writer,
-            }
-            .into(),
-        )?;
+        self.writer.write_str(" ")?;
+        encode_value(self.writer)?;
 
         self.newline()?;
 
         Ok(())
     }
 
-    pub fn encode_info<S: EncodeLabelSet>(&mut self, label_set: &S) -> Result<(), std::fmt::Error> {
+    pub fn encode_info<S: EncodeLabelSet>(&mut self, label_set: &S) -> Result<(), fmt::Error> {
         self.write_name_and_unit()?;
 
         self.write_suffix("info")?;
@@ -175,7 +203,7 @@ impl<'a, 'b> MetricEncoder<'a, 'b> {
     pub fn encode_family<'c, 'd, S: EncodeLabelSet>(
         &'c mut self,
         label_set: &'d S,
-    ) -> Result<MetricEncoder<'c, 'd>, std::fmt::Error> {
+    ) -> Result<MetricEncoder<'c, 'd>, fmt::Error> {
         debug_assert!(self.family_labels.is_none());
 
         Ok(MetricEncoder {
@@ -193,7 +221,7 @@ impl<'a, 'b> MetricEncoder<'a, 'b> {
         count: u64,
         buckets: &[(f64, u64)],
         exemplars: Option<&HashMap<usize, Exemplar<S, f64>>>,
-    ) -> Result<(), std::fmt::Error> {
+    ) -> Result<(), fmt::Error> {
         self.write_name_and_unit()?;
         self.write_suffix("sum")?;
         self.encode_labels::<()>(None)?;
@@ -226,7 +254,7 @@ impl<'a, 'b> MetricEncoder<'a, 'b> {
                 .write_str(itoa::Buffer::new().format(cummulative))?;
 
             if let Some(exemplar) = exemplars.and_then(|e| e.get(&i)) {
-                self.encode_exemplar(exemplar)?
+                self.encode_exemplar(|w, v| w.write_str(dtoa::Buffer::new().format(v)), exemplar)?;
             }
 
             self.newline()?;
@@ -236,28 +264,29 @@ impl<'a, 'b> MetricEncoder<'a, 'b> {
     }
 
     /// Encode an exemplar for the given metric.
-    fn encode_exemplar<S: EncodeLabelSet, V: EncodeExemplarValue>(
+    fn encode_exemplar<S: EncodeLabelSet, V>(
         &mut self,
+        encode_value: impl Fn(&mut dyn Write, V) -> fmt::Result,
         exemplar: &Exemplar<S, V>,
-    ) -> Result<(), std::fmt::Error> {
+    ) -> Result<(), fmt::Error>
+    where
+        V: Copy,
+    {
         self.writer.write_str(" # {")?;
         exemplar
             .label_set
             .encode(LabelSetEncoder::new(self.writer).into())?;
         self.writer.write_str("} ")?;
-        exemplar.value.encode(
-            ExemplarValueEncoder {
-                writer: self.writer,
-            }
-            .into(),
-        )?;
+        encode_value(self.writer, exemplar.value)?;
+
         Ok(())
     }
 
-    fn newline(&mut self) -> Result<(), std::fmt::Error> {
+    fn newline(&mut self) -> Result<(), fmt::Error> {
         self.writer.write_str("\n")
     }
-    fn write_name_and_unit(&mut self) -> Result<(), std::fmt::Error> {
+
+    fn write_name_and_unit(&mut self) -> Result<(), fmt::Error> {
         self.writer.write_str(self.name)?;
         if let Some(unit) = self.unit {
             self.writer.write_str("_")?;
@@ -267,7 +296,7 @@ impl<'a, 'b> MetricEncoder<'a, 'b> {
         Ok(())
     }
 
-    fn write_suffix(&mut self, suffix: &'static str) -> Result<(), std::fmt::Error> {
+    fn write_suffix(&mut self, suffix: &'static str) -> Result<(), fmt::Error> {
         self.writer.write_str("_")?;
         self.writer.write_str(suffix)?;
 
@@ -279,7 +308,7 @@ impl<'a, 'b> MetricEncoder<'a, 'b> {
     fn encode_labels<S: EncodeLabelSet>(
         &mut self,
         additional_labels: Option<&S>,
-    ) -> Result<(), std::fmt::Error> {
+    ) -> Result<(), fmt::Error> {
         if self.const_labels.is_empty()
             && additional_labels.is_none()
             && self.family_labels.is_none()
@@ -311,70 +340,6 @@ impl<'a, 'b> MetricEncoder<'a, 'b> {
         self.writer.write_str("}")?;
 
         Ok(())
-    }
-}
-
-pub(crate) struct CounterValueEncoder<'a> {
-    writer: &'a mut dyn Write,
-}
-
-impl<'a> std::fmt::Debug for CounterValueEncoder<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CounterValueEncoder").finish()
-    }
-}
-
-impl<'a> CounterValueEncoder<'a> {
-    pub fn encode_f64(&mut self, v: f64) -> Result<(), std::fmt::Error> {
-        self.writer.write_str(" ")?;
-        self.writer.write_str(dtoa::Buffer::new().format(v))?;
-        Ok(())
-    }
-
-    pub fn encode_u64(&mut self, v: u64) -> Result<(), std::fmt::Error> {
-        self.writer.write_str(" ")?;
-        self.writer.write_str(itoa::Buffer::new().format(v))?;
-        Ok(())
-    }
-}
-
-pub(crate) struct GaugeValueEncoder<'a> {
-    writer: &'a mut dyn Write,
-}
-
-impl<'a> std::fmt::Debug for GaugeValueEncoder<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GaugeValueEncoder").finish()
-    }
-}
-
-impl<'a> GaugeValueEncoder<'a> {
-    pub fn encode_f64(&mut self, v: f64) -> Result<(), std::fmt::Error> {
-        self.writer.write_str(" ")?;
-        self.writer.write_str(dtoa::Buffer::new().format(v))?;
-        Ok(())
-    }
-
-    pub fn encode_i64(&mut self, v: i64) -> Result<(), std::fmt::Error> {
-        self.writer.write_str(" ")?;
-        self.writer.write_str(itoa::Buffer::new().format(v))?;
-        Ok(())
-    }
-}
-
-pub(crate) struct ExemplarValueEncoder<'a> {
-    writer: &'a mut dyn Write,
-}
-
-impl<'a> std::fmt::Debug for ExemplarValueEncoder<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ExemplarValueEncoder").finish()
-    }
-}
-
-impl<'a> ExemplarValueEncoder<'a> {
-    pub fn encode(&mut self, v: f64) -> Result<(), std::fmt::Error> {
-        self.writer.write_str(dtoa::Buffer::new().format(v))
     }
 }
 
@@ -444,7 +409,7 @@ impl<'a> std::fmt::Debug for LabelKeyEncoder<'a> {
 }
 
 impl<'a> LabelKeyEncoder<'a> {
-    pub fn encode_label_value(self) -> Result<LabelValueEncoder<'a>, std::fmt::Error> {
+    pub fn encode_label_value(self) -> Result<LabelValueEncoder<'a>, fmt::Error> {
         self.writer.write_str("=\"")?;
         Ok(LabelValueEncoder {
             writer: self.writer,
@@ -452,8 +417,8 @@ impl<'a> LabelKeyEncoder<'a> {
     }
 }
 
-impl<'a> std::fmt::Write for LabelKeyEncoder<'a> {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+impl<'a> Write for LabelKeyEncoder<'a> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
         self.writer.write_str(s)
     }
 }
@@ -469,13 +434,13 @@ impl<'a> std::fmt::Debug for LabelValueEncoder<'a> {
 }
 
 impl<'a> LabelValueEncoder<'a> {
-    pub fn finish(self) -> Result<(), std::fmt::Error> {
+    pub fn finish(self) -> Result<(), fmt::Error> {
         self.writer.write_str("\"")
     }
 }
 
-impl<'a> std::fmt::Write for LabelValueEncoder<'a> {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+impl<'a> Write for LabelValueEncoder<'a> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
         self.writer.write_str(s)
     }
 }
